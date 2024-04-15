@@ -5,12 +5,10 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 #[cfg(not(feature = "std"))]
-use core::primitive::str;
-
-use blake2::{Blake2b512, Digest};
 use buf_view::BufView;
 #[cfg(feature = "std")]
 use rand::distributions::{Alphanumeric, DistString};
+use sha2::{Digest, Sha256};
 #[cfg(feature = "std")]
 use std::io::BufWriter;
 
@@ -182,12 +180,12 @@ impl Node {
     }
 
     pub fn hash(&self) -> Vec<u8> {
-        let mut hasher = Blake2b512::new();
+        let mut hasher = Sha256::new();
         self._hash(&mut hasher);
         hasher.finalize().to_vec()
     }
 
-    fn _hash(&self, h: &mut Blake2b512) {
+    fn _hash(&self, h: &mut Sha256) {
         match self {
             Node::Block { number, contracts } => {
                 Digest::update(h, &number.to_be_bytes());
@@ -202,7 +200,8 @@ impl Node {
                 }
             }
             Node::Variable { name, value } => {
-                Digest::update(h, format!("{}{}", name, s(value)).as_bytes());
+                Digest::update(h, name);
+                Digest::update(h, value);
             }
             Node::Struct { name, fields } => {
                 Digest::update(h, name);
@@ -217,17 +216,19 @@ impl Node {
                 }
             }
             Node::Entry { key, entry } => {
-                Digest::update(h, s(key));
+                Digest::update(h, key);
                 entry._hash(h);
             }
         }
     }
 
+    #[cfg(feature = "std")]
     pub fn pretty(&self) {
         let mut r = String::new();
         self._pretty(0, &mut r);
     }
 
+    #[cfg(feature = "std")]
     fn _pretty(&self, depth: usize, r: &mut String) {
         let indent = " ".repeat(depth);
         r.push_str(&indent);
@@ -262,6 +263,8 @@ impl Node {
         }
     }
 }
+
+#[cfg(feature = "std")]
 fn eword(x: &str) -> EValue {
     let mut bs = x.as_bytes().to_vec();
     assert!(bs.len() <= 32);
@@ -269,6 +272,7 @@ fn eword(x: &str) -> EValue {
     bs.try_into().unwrap()
 }
 
+#[cfg(feature = "std")]
 fn a(x: &str) -> [u8; 20] {
     let mut bs = x.as_bytes().to_vec();
     assert!(bs.len() <= 20);
@@ -276,12 +280,12 @@ fn a(x: &str) -> [u8; 20] {
     bs.try_into().unwrap()
 }
 
-#[cfg(not(no_std))]
+#[cfg(feature = "std")]
 fn strand(l: usize) -> String {
     Alphanumeric.sample_string(&mut rand::thread_rng(), l)
 }
 
-#[cfg(not(no_std))]
+#[cfg(feature = "std")]
 fn make_var() -> Node {
     Node::Variable {
         name: strand(8),
@@ -289,7 +293,7 @@ fn make_var() -> Node {
     }
 }
 
-#[cfg(not(no_std))]
+#[cfg(feature = "std")]
 fn make_contract(count: usize) -> Node {
     Node::Contract {
         address: a(&strand(20)),
@@ -297,7 +301,7 @@ fn make_contract(count: usize) -> Node {
     }
 }
 
-#[cfg(not(no_std))]
+#[cfg(feature = "std")]
 pub fn random_tree(contract_count: usize, var_count: usize) -> Vec<u8> {
     let db = Node::Block {
         number: 125,
