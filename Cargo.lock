@@ -12,12 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "buf-view"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a635f2d2147f031402a8a0fd7eb9dc6c3d31689cbc0fe93077fccd548dfbaafc"
-
-[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -130,7 +124,6 @@ dependencies = [
 name = "trivial_tree"
 version = "0.1.0"
 dependencies = [
- "buf-view",
  "rand",
  "sha2",
 ]

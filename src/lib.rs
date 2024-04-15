@@ -1,23 +1,27 @@
-// #![cfg_attr(not(), no_std)]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+pub mod buf_view;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
-#[cfg(not(feature = "std"))]
 use buf_view::BufView;
+#[cfg(not(feature = "std"))]
+use core::{convert::TryInto, iter::Iterator, panic, result::Result, result::Result::*, todo};
 #[cfg(feature = "std")]
 use rand::distributions::{Alphanumeric, DistString};
 use sha2::{Digest, Sha256};
 #[cfg(feature = "std")]
 use std::io::BufWriter;
 
-pub type EValue = [u8; 32];
-
 #[cfg(feature = "std")]
 fn s(x: &[u8]) -> String {
     std::str::from_utf8(x).unwrap().to_string()
 }
+
+type ShittyString = Vec<u8>;
+pub type EValue = [u8; 32];
 
 pub enum Node {
     Block {
@@ -29,15 +33,15 @@ pub enum Node {
         storage: Vec<Node>,
     },
     Variable {
-        name: String,
+        name: ShittyString,
         value: EValue,
     },
     Struct {
-        name: String,
+        name: ShittyString,
         fields: Vec<Node>,
     },
     Mapping {
-        name: String,
+        name: ShittyString,
         entries: Vec<Node>,
     },
     Entry {
@@ -56,6 +60,7 @@ impl Node {
         }
     }
 
+    #[cfg(feature = "std")]
     fn serialize<W: std::io::Write>(&self, out: &mut W) {
         match self {
             Node::Block { number, contracts } => {
@@ -75,7 +80,7 @@ impl Node {
             Node::Variable { name, value } => {
                 out.write_all(&[self.to_id()]).unwrap();
                 out.write_all(&name.len().to_le_bytes()).unwrap();
-                out.write_all(name.as_bytes()).unwrap();
+                out.write_all(name).unwrap();
                 out.write_all(value).unwrap();
             }
             Node::Struct { name, fields } => {
@@ -85,7 +90,7 @@ impl Node {
             Node::Mapping { name, entries } => {
                 out.write_all(&[self.to_id()]).unwrap();
                 out.write_all(&name.len().to_le_bytes()).unwrap();
-                out.write_all(name.as_bytes()).unwrap();
+                out.write_all(name).unwrap();
                 out.write_all(&entries.len().to_le_bytes()).unwrap();
                 for e in entries {
                     e.serialize(out);
@@ -138,9 +143,8 @@ impl Node {
 
     fn parse_variable(b: &mut BufView) -> Result<Node, String> {
         let name_length = b.read_u64_le() as usize;
-        let mut name_bytes = vec![0; name_length];
-        b.read_bytes(&mut name_bytes);
-        let name = std::str::from_utf8(&name_bytes).unwrap().to_string();
+        let mut name = vec![0; name_length];
+        b.read_bytes(&mut name);
 
         let mut value = vec![0; 32];
         b.read_bytes(&mut value);
@@ -157,9 +161,8 @@ impl Node {
 
     fn parse_mapping(b: &mut BufView) -> Result<Node, String> {
         let name_length = b.read_u64_le() as usize;
-        let mut name_bytes = vec![0; name_length];
-        b.read_bytes(&mut name_bytes);
-        let name = std::str::from_utf8(&name_bytes).unwrap().to_string();
+        let mut name = vec![0; name_length];
+        b.read_bytes(&mut name);
 
         let slot_count = b.read_u64_le();
         let entries = (0..slot_count)
@@ -210,7 +213,7 @@ impl Node {
                 }
             }
             Node::Mapping { name, entries } => {
-                Digest::update(h, name.as_bytes());
+                Digest::update(h, name);
                 for e in entries {
                     e._hash(h)
                 }
@@ -247,11 +250,11 @@ impl Node {
                 }
             }
             Node::Variable { name, value } => {
-                r.push_str(&format!("{name} -> {}\n", s(value)));
+                r.push_str(&format!("{} -> {}\n", s(name), s(value)));
             }
             Node::Struct { name, fields } => todo!(),
             Node::Mapping { name, entries } => {
-                r.push_str(&format!("{name} :=\n"));
+                r.push_str(&format!("{} :=\n", s(name)));
                 for e in entries {
                     e._pretty(depth + 2, r);
                 }
@@ -265,24 +268,27 @@ impl Node {
 }
 
 #[cfg(feature = "std")]
-fn eword(x: &str) -> EValue {
-    let mut bs = x.as_bytes().to_vec();
+fn eword(x: &[u8]) -> EValue {
+    let mut bs = x.to_vec();
     assert!(bs.len() <= 32);
     bs.resize(32, 0u8);
     bs.try_into().unwrap()
 }
 
 #[cfg(feature = "std")]
-fn a(x: &str) -> [u8; 20] {
-    let mut bs = x.as_bytes().to_vec();
+fn a(x: &[u8]) -> [u8; 20] {
+    let mut bs = x.to_vec();
     assert!(bs.len() <= 20);
     bs.resize(20, 0u8);
     bs.try_into().unwrap()
 }
 
 #[cfg(feature = "std")]
-fn strand(l: usize) -> String {
-    Alphanumeric.sample_string(&mut rand::thread_rng(), l)
+fn strand(l: usize) -> ShittyString {
+    Alphanumeric
+        .sample_string(&mut rand::thread_rng(), l)
+        .as_bytes()
+        .to_vec()
 }
 
 #[cfg(feature = "std")]
