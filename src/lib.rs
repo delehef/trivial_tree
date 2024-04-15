@@ -229,6 +229,7 @@ impl Node {
     pub fn pretty(&self) {
         let mut r = String::new();
         self._pretty(0, &mut r);
+        println!("{r}");
     }
 
     #[cfg(feature = "std")]
