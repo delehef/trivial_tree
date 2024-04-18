@@ -22,163 +22,100 @@ fn s(x: &[u8]) -> String {
 
 type ShittyString = Vec<u8>;
 pub type EValue = [u8; 32];
+pub type EAddress = [u8; 20];
 
-pub enum Node {
-    Block {
-        number: usize,
-        contracts: Vec<Node>,
-    },
-    Contract {
-        address: [u8; 20],
-        storage: Vec<Node>,
-    },
-    Variable {
-        name: ShittyString,
-        value: EValue,
-    },
-    Struct {
-        name: ShittyString,
-        fields: Vec<Node>,
-    },
-    Mapping {
-        name: ShittyString,
-        entries: Vec<Node>,
-    },
-    Entry {
-        key: EValue,
-        entry: Box<Node>,
-    },
+pub enum Node<const HASH_LEN: usize = 32> {
+    Inner { children: Vec<Node> },
+    Leaf { key: EAddress, value: EValue },
+    HashedSubTree { hash: [u8; HASH_LEN] },
 }
 
-impl Node {
+impl<const HASH_LEN: usize> Node<HASH_LEN> {
     fn to_id(&self) -> u8 {
         match self {
-            Node::Variable { .. } => 1,
-            Node::Struct { .. } => 2,
-            Node::Mapping { .. } => 3,
-            _ => panic!("nope"),
+            Node::Inner { .. } => 1,
+            Node::Leaf { .. } => 2,
+            Node::HashedSubTree { .. } => 3,
         }
     }
 
     #[cfg(feature = "std")]
-    fn serialize<W: std::io::Write>(&self, out: &mut W) {
+    pub fn random_tree(contract_count: usize, leaf_count: usize) -> Node {
+        let db = Node::Inner {
+            children: (0..contract_count)
+                .map(|_| make_inner(leaf_count))
+                .collect(),
+        };
+        println!("The DB:");
+        db.pretty();
+        db
+    }
+
+    #[cfg(feature = "std")]
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut out = BufWriter::new(Vec::new());
+        self.serialize_into(&mut out);
+        out.into_inner().unwrap()
+    }
+
+    #[cfg(feature = "std")]
+    fn serialize_into<W: std::io::Write>(&self, out: &mut W) {
         match self {
-            Node::Block { number, contracts } => {
-                out.write_all(&number.to_le_bytes()).unwrap();
-                out.write_all(&contracts.len().to_le_bytes()).unwrap();
-                for c in contracts {
-                    c.serialize(out);
-                }
-            }
-            Node::Contract { address, storage } => {
-                out.write_all(address).unwrap();
-                out.write_all(&storage.len().to_le_bytes()).unwrap();
-                for s in storage {
-                    s.serialize(out);
-                }
-            }
-            Node::Variable { name, value } => {
+            Node::Inner { children } => {
                 out.write_all(&[self.to_id()]).unwrap();
-                out.write_all(&name.len().to_le_bytes()).unwrap();
-                out.write_all(name).unwrap();
+                out.write_all(&children.len().to_le_bytes()).unwrap();
+                for c in children {
+                    c.serialize_into(out);
+                }
+            }
+            Node::Leaf { key, value } => {
+                out.write_all(&[self.to_id()]).unwrap();
+                out.write_all(key).unwrap();
                 out.write_all(value).unwrap();
             }
-            Node::Struct { name, fields } => {
+            Node::HashedSubTree { hash } => {
                 out.write_all(&[self.to_id()]).unwrap();
-                todo!()
-            }
-            Node::Mapping { name, entries } => {
-                out.write_all(&[self.to_id()]).unwrap();
-                out.write_all(&name.len().to_le_bytes()).unwrap();
-                out.write_all(name).unwrap();
-                out.write_all(&entries.len().to_le_bytes()).unwrap();
-                for e in entries {
-                    e.serialize(out);
-                }
-            }
-            Node::Entry { key, entry } => {
-                out.write_all(key).unwrap();
-                entry.serialize(out);
+                out.write_all(hash).unwrap();
             }
         }
     }
 
     pub fn parse(b: &mut BufView) -> Result<Node, String> {
-        Node::parse_block(b)
-    }
-
-    fn parse_block(b: &mut BufView) -> Result<Node, String> {
-        let n = b.read_u64_le() as usize;
-        let contract_count = b.read_u64_le() as usize;
-        let contracts = (0..contract_count)
-            .map(|_| Node::parse_contract(b))
-            .collect::<Result<Vec<Node>, String>>()?;
-
-        Ok(Node::Block {
-            number: n,
-            contracts,
-        })
-    }
-
-    fn parse_contract(b: &mut BufView) -> Result<Node, String> {
-        let mut address = [0u8; 20];
-        b.read_bytes(&mut address);
-
-        let slot_count = b.read_u64_le() as usize;
-        let storage = (0..slot_count)
-            .map(|_| Node::parse_slot(b))
-            .collect::<Result<Vec<Node>, String>>()?;
-        Ok(Node::Contract { address, storage })
-    }
-
-    fn parse_slot(b: &mut BufView) -> Result<Node, String> {
-        let t = b.read_u8();
-        match t {
-            1 => Node::parse_variable(b),
-            2 => Node::parse_struct(b),
-            3 => Node::parse_mapping(b),
-            _ => Err(format!("unknown node type: {}", t)),
+        match b.read_u8() {
+            1 => Self::parse_inner(b),
+            2 => Self::parse_leaf(b),
+            3 => Self::parse_hash(b),
+            id @ _ => Err(format!("unknown node type: {id}")),
         }
     }
 
-    fn parse_variable(b: &mut BufView) -> Result<Node, String> {
-        let name_length = b.read_u64_le() as usize;
-        let mut name = vec![0; name_length];
-        b.read_bytes(&mut name);
+    fn parse_inner(b: &mut BufView) -> Result<Node, String> {
+        let children_count = b.read_u64_le() as usize;
+        let children = (0..children_count)
+            .map(|_| Self::parse(b))
+            .collect::<Result<Vec<Node>, String>>()?;
+
+        Ok(Node::Inner { children })
+    }
+
+    fn parse_leaf(b: &mut BufView) -> Result<Node, String> {
+        let mut key = vec![0; 20];
+        b.read_bytes(&mut key);
 
         let mut value = vec![0; 32];
         b.read_bytes(&mut value);
 
-        Ok(Node::Variable {
-            name,
+        Ok(Node::Leaf {
+            key: key.try_into().unwrap(),
             value: value.try_into().unwrap(),
         })
     }
 
-    fn parse_struct(b: &mut BufView) -> Result<Node, String> {
-        todo!()
-    }
-
-    fn parse_mapping(b: &mut BufView) -> Result<Node, String> {
-        let name_length = b.read_u64_le() as usize;
-        let mut name = vec![0; name_length];
-        b.read_bytes(&mut name);
-
-        let slot_count = b.read_u64_le();
-        let entries = (0..slot_count)
-            .map(|_| Node::parse_entry(b))
-            .collect::<Result<Vec<Node>, String>>()?;
-        Ok(Node::Mapping { name, entries })
-    }
-
-    fn parse_entry(b: &mut BufView) -> Result<Node, String> {
-        let mut k = vec![0; 32];
-        b.read_bytes(&mut k);
-
-        let v = Node::parse_slot(b)?;
-        Ok(Node::Entry {
-            key: k.try_into().unwrap(),
-            entry: Box::new(v),
+    fn parse_hash(b: &mut BufView) -> Result<Node, String> {
+        let mut hash = vec![0; HASH_LEN];
+        b.read_bytes(&mut hash);
+        Ok(Node::HashedSubTree {
+            hash: hash.try_into().unwrap(),
         })
     }
 
@@ -190,38 +127,16 @@ impl Node {
 
     fn _hash(&self, h: &mut Sha256) {
         match self {
-            Node::Block { number, contracts } => {
-                Digest::update(h, &number.to_be_bytes());
-                for x in contracts {
+            Node::Inner { children } => {
+                for x in children {
                     x._hash(h);
                 }
             }
-            Node::Contract { address, storage } => {
-                Digest::update(h, address);
-                for s in storage {
-                    s._hash(h)
-                }
-            }
-            Node::Variable { name, value } => {
-                Digest::update(h, name);
+            Node::Leaf { key, value } => {
+                Digest::update(h, key);
                 Digest::update(h, value);
             }
-            Node::Struct { name, fields } => {
-                Digest::update(h, name);
-                for f in fields {
-                    f._hash(h)
-                }
-            }
-            Node::Mapping { name, entries } => {
-                Digest::update(h, name);
-                for e in entries {
-                    e._hash(h)
-                }
-            }
-            Node::Entry { key, entry } => {
-                Digest::update(h, key);
-                entry._hash(h);
-            }
+            Node::HashedSubTree { hash } => Digest::update(h, hash),
         }
     }
 
@@ -234,36 +149,20 @@ impl Node {
 
     #[cfg(feature = "std")]
     fn _pretty(&self, depth: usize, r: &mut String) {
-        let indent = " ".repeat(depth);
+        let indent = " ".repeat(depth * 2);
         r.push_str(&indent);
 
         match self {
-            Node::Block { number, contracts } => {
-                r.push_str(&format!("Block #{number}\n"));
-                for c in contracts {
-                    c._pretty(depth + 2, r);
+            Node::Inner { children } => {
+                r.push_str(&format!("Inner-{depth}\n"));
+                for c in children {
+                    c._pretty(depth + 1, r);
                 }
             }
-            Node::Contract { address, storage } => {
-                r.push_str(&format!("Contract@{}\n", s(address)));
-                for s in storage {
-                    s._pretty(depth + 2, r);
-                }
+            Node::Leaf { key, value } => {
+                r.push_str(&format!("{} -> {}\n", s(key), s(value)));
             }
-            Node::Variable { name, value } => {
-                r.push_str(&format!("{} -> {}\n", s(name), s(value)));
-            }
-            Node::Struct { name, fields } => todo!(),
-            Node::Mapping { name, entries } => {
-                r.push_str(&format!("{} :=\n", s(name)));
-                for e in entries {
-                    e._pretty(depth + 2, r);
-                }
-            }
-            Node::Entry { key, entry } => {
-                r.push_str(&format!("{} := \n", s(key)));
-                entry._pretty(depth + 1, r);
-            }
+            Node::HashedSubTree { hash } => r.push_str(&format!("H := {}\n", s(hash))),
         }
     }
 }
@@ -293,32 +192,13 @@ fn strand(l: usize) -> ShittyString {
 }
 
 #[cfg(feature = "std")]
-fn make_var() -> Node {
-    Node::Variable {
-        name: strand(8),
-        value: eword(&strand(32)),
-    }
-}
-
-#[cfg(feature = "std")]
-fn make_contract(count: usize) -> Node {
-    Node::Contract {
-        address: a(&strand(20)),
-        storage: (0..count).map(|_| make_var()).collect(),
-    }
-}
-
-#[cfg(feature = "std")]
-pub fn random_tree(contract_count: usize, var_count: usize) -> Vec<u8> {
-    let db = Node::Block {
-        number: 125,
-        contracts: (0..contract_count)
-            .map(|_| make_contract(var_count))
+fn make_inner(count: usize) -> Node {
+    Node::Inner {
+        children: (0..count)
+            .map(|_| Node::Leaf {
+                key: a(&strand(20)),
+                value: eword(&strand(32)),
+            })
             .collect(),
-    };
-    println!("The DB:");
-    db.pretty();
-    let mut out = BufWriter::new(Vec::new());
-    db.serialize(&mut out);
-    out.into_inner().unwrap()
+    }
 }
