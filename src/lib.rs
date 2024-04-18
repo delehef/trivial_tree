@@ -41,14 +41,11 @@ impl<const HASH_LEN: usize> Node<HASH_LEN> {
 
     #[cfg(feature = "std")]
     pub fn random_tree(contract_count: usize, leaf_count: usize) -> Node {
-        let db = Node::Inner {
+        Node::Inner {
             children: (0..contract_count)
                 .map(|_| make_inner(leaf_count))
                 .collect(),
-        };
-        println!("The DB:");
-        db.pretty();
-        db
+        }
     }
 
     #[cfg(feature = "std")]
